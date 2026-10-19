@@ -1,0 +1,628 @@
+<meta name='viewport' content='width=device-width, initial-scale=1'/><!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio Tag Editor</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#000;color:#eee;font:15px/1.4 system-ui,sans-serif}
+main{max-width:760px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:#888;margin:0 0 16px}
+.drop{display:block;border:2px dashed #333;border-radius:14px;padding:28px 16px;text-align:center;color:#aaa;cursor:pointer}
+.drop.over{border-color:#7c9cff;color:#fff}
+.card{background:#0f0f10;border:1px solid #222;border-radius:14px;padding:14px;margin-top:14px}
+.cover{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start}
+.pic{width:160px;height:160px;border-radius:10px;background:#1a1a1a;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#666}
+.pic img{width:100%;height:100%;object-fit:cover}
+.side{flex:1;min-width:200px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+button{background:#1c1c1f;color:#eee;border:1px solid #333;border-radius:10px;padding:10px 14px;font:inherit;cursor:pointer}
+button:active{background:#2a2a2e}
+button:disabled{opacity:.4}
+button.primary{background:#7c9cff;color:#000;border:0;font-weight:600;width:100%;padding:14px;margin-top:14px}
+#fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.f{display:flex;flex-direction:column;gap:4px}
+.f.long{grid-column:1/-1}
+.f span{font-size:12px;color:#888;text-transform:uppercase;letter-spacing:.04em}
+input,textarea{background:#000;color:#fff;border:1px solid #2c2c30;border-radius:8px;padding:10px;font:inherit;width:100%}
+input:focus,textarea:focus{outline:none;border-color:#7c9cff}
+table{width:100%;border-collapse:collapse}
+td{padding:5px 0;vertical-align:top;font-size:13px;word-break:break-word}
+td:first-child{color:#888;width:110px}
+audio{width:100%;margin-top:14px}
+#msg{margin-top:12px;min-height:20px;color:#7be39a;font-size:14px;white-space:pre-line}
+#msg.err{color:#ff7b7b}
+#msg.warn{color:#ffd37b}
+</style>
+</head>
+<body>
+<main>
+  <h1>Audio Tag Editor</h1>
+  <p class="sub">MP3, FLAC &amp; M4A · only the tags change, the audio is never re-encoded</p>
+
+  <label class="drop" id="drop">
+    <input type="file" id="file" accept=".mp3,.flac,.m4a,.mp4,.m4b,audio/*" hidden>
+    Tap to choose an audio file (or drop it here)
+  </label>
+  <div id="msg"></div>
+
+  <section id="editor" hidden>
+    <div class="card cover">
+      <div class="pic"><img id="coverImg" hidden><span id="coverEmpty">No cover</span></div>
+      <div class="side">
+        <div id="coverInfo" style="color:#888;font-size:13px"></div>
+        <div class="btns">
+          <button id="coverChange">Change cover</button>
+          <button id="coverSave">Save cover</button>
+          <button id="coverRemove">Remove</button>
+        </div>
+        <input type="file" id="coverFile" accept="image/*" hidden>
+      </div>
+    </div>
+
+    <div class="card" id="fields"></div>
+    <div class="card"><table id="info"></table></div>
+
+    <audio id="player" controls></audio>
+    <button class="primary" id="download">Download edited file</button>
+    <div class="btns"><button id="reset">Reset all changes</button></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+
+/* ---------- field map ---------- */
+const FIELDS = [
+  {k:'title',       label:'Title',        id3:['TIT2'],        vc:['TITLE'],         mp4:'\u00A9nam'},
+  {k:'artist',      label:'Artist',       id3:['TPE1'],        vc:['ARTIST'],        mp4:'\u00A9ART'},
+  {k:'album',       label:'Album',        id3:['TALB'],        vc:['ALBUM'],         mp4:'\u00A9alb'},
+  {k:'albumartist', label:'Album artist', id3:['TPE2'],        vc:['ALBUMARTIST'],   mp4:'aART'},
+  {k:'year',        label:'Year / date',  id3:['TDRC','TYER'], vc:['DATE','YEAR'],   mp4:'\u00A9day'},
+  {k:'track',       label:'Track',        id3:['TRCK'],        vc:['TRACKNUMBER'],   mp4:'trkn'},
+  {k:'disc',        label:'Disc',         id3:['TPOS'],        vc:['DISCNUMBER'],    mp4:'disk'},
+  {k:'genre',       label:'Genre',        id3:['TCON'],        vc:['GENRE'],         mp4:'\u00A9gen'},
+  {k:'composer',    label:'Composer',     id3:['TCOM'],        vc:['COMPOSER'],      mp4:'\u00A9wrt'},
+  {k:'bpm',         label:'BPM',          id3:['TBPM'],        vc:['BPM'],           mp4:'tmpo'},
+  {k:'comment',     label:'Comment',      id3:['COMM'],        vc:['COMMENT','DESCRIPTION'], mp4:'\u00A9cmt', long:true, lang:true},
+  {k:'lyrics',      label:'Lyrics',       id3:['USLT'],        vc:['LYRICS','UNSYNCEDLYRICS'], mp4:'\u00A9lyr', long:true, lang:true},
+];
+
+/* ---------- byte helpers ---------- */
+const u8 = (...a) => new Uint8Array(a);
+const concat = parts => { let n=0; for(const p of parts) n+=p.length; const o=new Uint8Array(n); let i=0; for(const p of parts){ o.set(p,i); i+=p.length; } return o; };
+const synchsafe = b => (b[0]<<21)|(b[1]<<14)|(b[2]<<7)|b[3];
+const toSynch = n => u8((n>>21)&127,(n>>14)&127,(n>>7)&127,n&127);
+const be32 = n => u8((n>>>24)&255,(n>>>16)&255,(n>>>8)&255,n&255);
+const be16 = n => u8((n>>8)&255,n&255);
+const le32 = n => u8(n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255);
+const rd32 = (b,i) => ((b[i]<<24)|(b[i+1]<<16)|(b[i+2]<<8)|b[i+3])>>>0;
+const latin1 = b => { let s=''; for(let i=0;i<b.length;i++) s+=String.fromCharCode(b[i]); return s; };
+const toLatin1 = s => { const o=new Uint8Array(s.length); for(let i=0;i<s.length;i++) o[i]=s.charCodeAt(i); return o; };
+const fmtSize = n => n>1048576 ? (n/1048576).toFixed(2)+' MB' : (n/1024).toFixed(1)+' KB';
+const hex = buf => [...new Uint8Array(buf)].map(x=>x.toString(16).padStart(2,'0')).join('');
+const same = (a,b) => { if(!a||!b) return a===b; if(a.length!==b.length) return false; for(let i=0;i<a.length;i++) if(a[i]!==b[i]) return false; return true; };
+const normNum = s => String(s).replace(/\b0+(\d)/g,'$1');
+function sniff(d){
+  if(d[0]===0xFF&&d[1]===0xD8) return 'image/jpeg';
+  if(d[0]===0x89&&d[1]===0x50&&d[2]===0x4E&&d[3]===0x47) return 'image/png';
+  if(d[0]===0x47&&d[1]===0x49&&d[2]===0x46) return 'image/gif';
+  if(latin1(d.subarray(0,4))==='RIFF'&&latin1(d.subarray(8,12))==='WEBP') return 'image/webp';
+  return null;
+}
+
+/* ---------- detect the REAL format from the bytes (not the file name) ---------- */
+function skipId3(buf){
+  let p=0;
+  while(p+10<=buf.length && buf[p]===0x49&&buf[p+1]===0x44&&buf[p+2]===0x33 && buf[p+3]<=4 && ((buf[p+6]|buf[p+7]|buf[p+8]|buf[p+9])&0x80)===0){
+    p+=10+synchsafe(buf.subarray(p+6,p+10))+((buf[p+3]===4&&(buf[p+5]&0x10))?10:0);
+  }
+  return p;
+}
+function isMpegSync(b,i){
+  if(b[i]!==0xFF||(b[i+1]&0xE0)!==0xE0) return false;
+  const ver=(b[i+1]>>3)&3, layer=(b[i+1]>>1)&3, br=b[i+2]>>4, sr=(b[i+2]>>2)&3;
+  return ver!==1&&layer!==0&&br!==15&&sr!==3;
+}
+function detect(buf){
+  const off=skipId3(buf);
+  const s=(o,n)=>latin1(buf.subarray(o,o+n));
+  if(s(off+4,4)==='ftyp') return {kind:'mp4',off};
+  let q=off; while(q<buf.length&&buf[q]===0&&q-off<65536) q++;
+  if(s(q,4)==='fLaC') return {kind:'flac'};
+  if(s(q,4)==='OggS') return {kind:'ogg'};
+  if(s(q,4)==='RIFF'&&s(q+8,4)==='WAVE') return {kind:'wav'};
+  if(s(q,4)==='FORM') return {kind:'aiff'};
+  if(buf[q]===0x1A&&buf[q+1]===0x45&&buf[q+2]===0xDF&&buf[q+3]===0xA3) return {kind:'webm'};
+  if(buf[q]===0xFF&&(buf[q+1]&0xF6)===0xF0) return {kind:'aac'};
+  for(let i=q;i<Math.min(q+8192,buf.length-4);i++) if(isMpegSync(buf,i)) return {kind:'mp3'};
+  return {kind:'unknown'};
+}
+const KIND_NAME = {mp3:'MP3',flac:'FLAC',mp4:'M4A / MP4 (AAC)',ogg:'Ogg (Opus/Vorbis)',wav:'WAV',aiff:'AIFF',webm:'WebM/Matroska',aac:'raw AAC (ADTS)',unknown:'an unknown format'};
+
+/* ---------- ID3 text helpers ---------- */
+function decodeStr(enc,b){
+  if(enc===1){
+    if(b[0]===0xFE&&b[1]===0xFF) return new TextDecoder('utf-16be').decode(b.subarray(2));
+    if(b[0]===0xFF&&b[1]===0xFE) return new TextDecoder('utf-16le').decode(b.subarray(2));
+    return new TextDecoder('utf-16le').decode(b);
+  }
+  if(enc===2) return new TextDecoder('utf-16be').decode(b);
+  if(enc===3) return new TextDecoder('utf-8').decode(b);
+  return new TextDecoder('windows-1252').decode(b);
+}
+const termLen = enc => (enc===1||enc===2)?2:1;
+function termIdx(enc,b,from){
+  if(enc===1||enc===2){ for(let i=from;i+1<b.length;i+=2) if(b[i]===0&&b[i+1]===0) return i; return b.length; }
+  const i=b.indexOf(0,from); return i<0?b.length:i;
+}
+function textVal(d){
+  if(!d.length) return '';
+  return decodeStr(d[0],d.subarray(1)).split('\0').map(x=>x.replace(/^\uFEFF/,'')).filter(Boolean).join('; ');
+}
+function parseLang(d){
+  if(d.length<5) return {lang:'eng',desc:'',text:''};
+  const enc=d[0], lang=latin1(d.subarray(1,4));
+  const t=termIdx(enc,d,4);
+  const desc=decodeStr(enc,d.subarray(4,t)).replace(/[\0\uFEFF]/g,'');
+  const text=decodeStr(enc,d.subarray(Math.min(t+termLen(enc),d.length))).replace(/^\uFEFF/,'').replace(/\0+$/,'');
+  return {lang,desc,text};
+}
+function parseApic(d){
+  if(d.length<4) return null;
+  const enc=d[0], me=d.indexOf(0,1); if(me<0) return null;
+  const mime=latin1(d.subarray(1,me)), type=d[me+1];
+  const t=termIdx(enc,d,me+2);
+  return {mime,type,data:d.slice(Math.min(t+termLen(enc),d.length))};
+}
+const enc16 = s => { const o=new Uint8Array(2+s.length*2); o[0]=0xFF; o[1]=0xFE; for(let i=0;i<s.length;i++){ const c=s.charCodeAt(i); o[2+i*2]=c&255; o[3+i*2]=c>>8; } return o; };
+const pickEnc = (ver,...s) => /^[\x00-\x7F\xA0-\xFF]*$/.test(s.join('')) ? 0 : (ver===4?3:1);
+const encWith = (enc,s) => enc===0 ? toLatin1(s) : enc===3 ? new TextEncoder().encode(s) : enc16(s);
+const termOf = enc => enc===1 ? u8(0,0) : u8(0);
+const textFrame = (id,s,ver) => { const e=pickEnc(ver,s); return {id,flags:u8(0,0),data:concat([u8(e),encWith(e,s)])}; };
+const langFrame = (id,m,s,ver) => { const e=pickEnc(ver,m.desc,s); return {id,flags:u8(0,0),data:concat([u8(e),toLatin1(m.lang.padEnd(3,' ').slice(0,3)),encWith(e,m.desc),termOf(e),encWith(e,s)])}; };
+const apicFrame = (mime,data) => ({id:'APIC',flags:u8(0,0),data:concat([u8(0),toLatin1(mime),u8(0,3,0),data])});
+const serFrame = (fr,ver) => concat([toLatin1(fr.id), ver===4?toSynch(fr.data.length):be32(fr.data.length), fr.flags, fr.data]);
+function deunsync(b){ const o=[]; for(let i=0;i<b.length;i++){ o.push(b[i]); if(b[i]===0xFF&&b[i+1]===0) i++; } return Uint8Array.from(o); }
+
+/* ---------- MP3 ---------- */
+function parseMp3(buf){
+  let p=0, ver=0, firstVer=0; const frames=[], seen=new Set();
+  while(p+10<=buf.length&&buf[p]===0x49&&buf[p+1]===0x44&&buf[p+2]===0x33){
+    const v=buf[p+3], flags=buf[p+5];
+    if(v<3||v>4) throw new Error('This file has an ID3v2.'+v+' tag. Only v2.3 and v2.4 tags are supported.');
+    const size=synchsafe(buf.subarray(p+6,p+10));
+    const tagEnd=p+10+size+((v===4&&(flags&0x10))?10:0);
+    let body=buf.subarray(p+10,Math.min(p+10+size,buf.length));
+    const tagUnsync=!!(flags&0x80);
+    if(v===3&&tagUnsync) body=deunsync(body);
+    let q=0;
+    if(flags&0x40) q = v===4 ? synchsafe(body.subarray(0,4)) : rd32(body,0)+4;
+    const mine=[];
+    while(q+10<=body.length){
+      if(body[q]===0) break;
+      const id=latin1(body.subarray(q,q+4));
+      if(!/^[A-Z0-9]{4}$/.test(id)) break;
+      const sz=v===4?synchsafe(body.subarray(q+4,q+8)):rd32(body,q+4);
+      if(q+10+sz>body.length) break;
+      const fl=body.slice(q+8,q+10); let data=body.slice(q+10,q+10+sz);
+      if(v===4){ if(fl[1]&1) data=data.subarray(4); if((fl[1]&2)||tagUnsync) data=deunsync(data); fl[1]&=~3; }
+      mine.push({id,flags:fl,data});
+      q+=10+sz;
+    }
+    if(mine.length&&!ver) ver=v;
+    if(!firstVer) firstVer=v;
+    for(const fr of mine){
+      if(fr.id[0]==='T'&&fr.id!=='TXXX'){ if(seen.has(fr.id)) continue; seen.add(fr.id); }
+      if(ver&&v!==ver) fr.flags=u8(0,0);
+      frames.push(fr);
+    }
+    p=tagEnd;
+  }
+  let end=buf.length;
+  if(end>=128&&buf[end-128]===0x54&&buf[end-127]===0x41&&buf[end-126]===0x47) end-=128; // old ID3v1 tag (metadata, not audio)
+  return {ver:ver||firstVer||3, frames, audio:buf.subarray(p,end)};
+}
+function readMp3(){
+  S.src={}; S.langMeta={};
+  for(const f of FIELDS){
+    let v='';
+    if(f.lang){
+      const c=S.frames.filter(x=>x.id===f.id3[0]).map(x=>({x,p:parseLang(x.data)}));
+      const m=c.find(m=>!m.p.desc)||c[0];
+      if(m){ S.src[f.k]=m.x; S.langMeta[f.k]=m.p; v=m.p.text; }
+    } else {
+      for(const id of f.id3){ const fr=S.frames.find(x=>x.id===id); if(fr){ v=textVal(fr.data); break; } }
+    }
+    S.orig[f.k]=S.vals[f.k]=v.replace(/\r\n?/g,'\n');
+  }
+  const aps=S.frames.filter(x=>x.id==='APIC').map(x=>parseApic(x.data)).filter(Boolean);
+  const ap=aps.find(a=>a.type===3)||aps[0];
+  S.cover={state:'keep',orig:ap?{mime:sniff(ap.data)||ap.mime,data:ap.data}:null};
+}
+function buildMp3(){
+  const ver=S.ver; let list=S.frames.slice(); const add=[];
+  for(const f of FIELDS){
+    const v=S.vals[f.k]; if(v===S.orig[f.k]) continue;
+    if(f.lang){
+      list=list.filter(x=>x!==S.src[f.k]);
+      if(v) add.push(langFrame(f.id3[0],S.langMeta[f.k]||{lang:'eng',desc:''},v,ver));
+    } else {
+      list=list.filter(x=>!f.id3.includes(x.id)&&!(f.k==='year'&&(x.id==='TDAT'||x.id==='TIME')));
+      if(v){
+        if(f.k==='year') add.push(textFrame(ver===4?'TDRC':'TYER', ver===3?(v.match(/^\d{4}/)||[v])[0]:v, ver));
+        else add.push(textFrame(f.id3[0],v,ver));
+      }
+    }
+  }
+  if(S.cover.state!=='keep'){
+    list=list.filter(x=>x.id!=='APIC');
+    if(S.cover.state==='new') add.push(apicFrame(S.cover.mime,S.cover.data));
+  }
+  const body=concat([...list,...add].map(fr=>serFrame(fr,ver)));
+  return concat([u8(0x49,0x44,0x33,ver,0,0),toSynch(body.length),body,S.audio]);
+}
+
+/* ---------- FLAC ---------- */
+function parseFlac(buf){
+  const off=skipId3(buf);
+  if(latin1(buf.subarray(off,off+4))!=='fLaC') throw new Error('Not a valid FLAC file.');
+  let p=off+4,last=false; const blocks=[];
+  while(!last&&p<buf.length){
+    const h=buf[p]; last=!!(h&0x80);
+    const len=(buf[p+1]<<16)|(buf[p+2]<<8)|buf[p+3];
+    blocks.push({type:h&0x7f,data:buf.slice(p+4,p+4+len)}); p+=4+len;
+  }
+  return {blocks,audio:buf.subarray(p)};
+}
+function parseVC(d){
+  const dv=new DataView(d.buffer,d.byteOffset,d.byteLength), td=new TextDecoder();
+  let p=0; const vl=dv.getUint32(p,true); p+=4;
+  const vendor=d.slice(p,p+vl); p+=vl;
+  const n=dv.getUint32(p,true); p+=4; const list=[];
+  for(let i=0;i<n&&p+4<=d.length;i++){
+    const l=dv.getUint32(p,true); p+=4;
+    const s=td.decode(d.subarray(p,p+l)); p+=l;
+    const e=s.indexOf('='); if(e>0) list.push([s.slice(0,e),s.slice(e+1)]);
+  }
+  return {vendor,list};
+}
+function parsePic(d){
+  const type=rd32(d,0), ml=rd32(d,4), mime=latin1(d.subarray(8,8+ml));
+  let p=8+ml; p+=4+rd32(d,p); p+=16;
+  const len=rd32(d,p); p+=4;
+  return {type,mime,data:d.slice(p,p+len)};
+}
+function readFlac(){
+  const vb=S.blocks.find(b=>b.type===4);
+  S.vc=vb?parseVC(vb.data):{vendor:new Uint8Array(0),list:[]};
+  for(const f of FIELDS){
+    let v='';
+    for(const a of f.vc){
+      const m=S.vc.list.filter(([k])=>k.toUpperCase()===a).map(x=>x[1]);
+      if(m.length){ v=m.join(f.long?'\n':'; '); break; }
+    }
+    S.orig[f.k]=S.vals[f.k]=v.replace(/\r\n?/g,'\n');
+  }
+  const pics=S.blocks.filter(b=>b.type===6).map(b=>parsePic(b.data));
+  const pic=pics.find(p=>p.type===3)||pics[0];
+  S.cover={state:'keep',orig:pic?{mime:sniff(pic.data)||pic.mime,data:pic.data}:null};
+}
+async function picBlock(c){
+  let w=0,h=0;
+  try{ const bm=await createImageBitmap(new Blob([c.data],{type:c.mime})); w=bm.width; h=bm.height; }catch{}
+  const mime=toLatin1(c.mime);
+  return {type:6,data:concat([be32(3),be32(mime.length),mime,be32(0),be32(w),be32(h),be32(24),be32(0),be32(c.data.length),c.data])};
+}
+async function buildFlac(){
+  let list=S.vc.list.slice();
+  for(const f of FIELDS){
+    const v=S.vals[f.k]; if(v===S.orig[f.k]) continue;
+    list=list.filter(([k])=>!f.vc.includes(k.toUpperCase()));
+    if(v) list.push([f.vc[0],v]);
+  }
+  const te=new TextEncoder();
+  const parts=[le32(S.vc.vendor.length),S.vc.vendor,le32(list.length)];
+  for(const [k,v] of list){ const b=te.encode(k+'='+v); parts.push(le32(b.length),b); }
+  let pics=S.blocks.filter(b=>b.type===6);
+  if(S.cover.state!=='keep'){ pics=[]; if(S.cover.state==='new') pics=[await picBlock(S.cover)]; }
+  const others=S.blocks.filter(b=>![1,4,6].includes(b.type));
+  const all=[...others,{type:4,data:concat(parts)},...pics];
+  const out=[u8(0x66,0x4C,0x61,0x43)];
+  all.forEach((b,i)=>{
+    if(b.data.length>0xFFFFFF) throw new Error('A metadata block is over 16 MB (cover too big?).');
+    out.push(u8((i===all.length-1?0x80:0)|b.type,(b.data.length>>16)&255,(b.data.length>>8)&255,b.data.length&255),b.data);
+  });
+  out.push(S.audio);
+  return concat(out);
+}
+
+/* ---------- M4A / MP4 ---------- */
+function boxes(b,start,end){
+  const out=[]; let p=start;
+  while(p+8<=end){
+    let size=rd32(b,p), hdr=8; const type=latin1(b.subarray(p+4,p+8));
+    if(size===1){ if(p+16>end) break; size=rd32(b,p+8)*4294967296+rd32(b,p+12); hdr=16; }
+    else if(size===0) size=end-p;
+    if(size<hdr||p+size>end) break;
+    out.push({type,start:p,hdr,size,end:p+size}); p+=size;
+  }
+  return out;
+}
+function parseMp4(buf){
+  const top=boxes(buf,0,buf.length);
+  const moov=top.find(x=>x.type==='moov');
+  if(!moov) throw new Error('This M4A has no "moov" section, so I cannot read it.');
+  if(top.some(x=>x.type==='moof')) throw new Error('Fragmented MP4 files are not supported.');
+  const kids=boxes(buf,moov.start+moov.hdr,moov.end);
+  const udta=kids.find(x=>x.type==='udta')||null;
+  let meta=null, metaKids=[], ilst=null, items=[];
+  if(udta){
+    meta=boxes(buf,udta.start+udta.hdr,udta.end).find(x=>x.type==='meta')||null;
+    if(meta){
+      const m0=meta.start+meta.hdr;
+      const off=latin1(buf.subarray(m0+8,m0+12))==='hdlr'?4:0;
+      metaKids=boxes(buf,m0+off,meta.end);
+      ilst=metaKids.find(x=>x.type==='ilst')||null;
+      if(ilst) items=boxes(buf,ilst.start+ilst.hdr,ilst.end);
+    }
+  }
+  const md=top.filter(x=>x.type==='mdat').sort((a,b)=>(b.end-b.start)-(a.end-a.start))[0];
+  return {mp4:{buf,top,moov,kids,udta,meta,metaKids,ilst,items}, audio:md?buf.subarray(md.start+md.hdr,md.end):new Uint8Array(0)};
+}
+function readMp4(){
+  const m=S.mp4, b=m.buf;
+  const get=type=>m.items.filter(x=>x.type===type).flatMap(x=>boxes(b,x.start+x.hdr,x.end).filter(d=>d.type==='data').map(d=>({flags:rd32(b,d.start+d.hdr)&0xFFFFFF,data:b.subarray(d.start+d.hdr+8,d.end)})));
+  for(const f of FIELDS){
+    const ds=get(f.mp4); let v='';
+    if(ds.length){
+      const t=f.mp4, d=ds[0].data;
+      if(t==='trkn'||t==='disk'){ if(d.length>=6){ const a=(d[2]<<8)|d[3], c=(d[4]<<8)|d[5]; v=a?(c?a+'/'+c:''+a):''; } }
+      else if(t==='tmpo'){ v=d.length===2?String((d[0]<<8)|d[1]):d.length===1?String(d[0]):''; }
+      else v=ds.map(x=>new TextDecoder().decode(x.data)).join(f.long?'\n':'; ');
+    }
+    S.orig[f.k]=S.vals[f.k]=v.replace(/\r\n?/g,'\n');
+  }
+  const cv=get('covr').find(d=>d.data.length>0);
+  S.cover={state:'keep',orig:cv?{mime:sniff(cv.data)||(cv.flags===14?'image/png':'image/jpeg'),data:cv.data.slice()}:null};
+}
+const mk = (type,...parts) => { const p=concat(parts); return concat([be32(8+p.length),toLatin1(type),p]); };
+const dataBox = (flags,val) => mk('data',be32(flags),be32(0),val);
+const HDLR = concat([be32(33),toLatin1('hdlr'),be32(0),be32(0),toLatin1('mdir'),toLatin1('appl'),be32(0),be32(0),u8(0)]);
+function mp4Item(f,v){
+  const t=f.mp4;
+  if(t==='trkn'||t==='disk'){
+    const m=v.trim().match(/^(\d{1,5})(?:\s*\/\s*(\d{1,5}))?$/);
+    if(!m) throw new Error(f.label+' must be a number like 3 or 3/12 for M4A files.');
+    const a=+m[1], c=+(m[2]||0);
+    return mk(t,dataBox(0,t==='trkn'?concat([be16(0),be16(a),be16(c),be16(0)]):concat([be16(0),be16(a),be16(c)])));
+  }
+  if(t==='tmpo'){
+    if(!/^\d{1,5}$/.test(v.trim())||+v>65535) throw new Error('BPM must be a whole number for M4A files.');
+    return mk(t,dataBox(21,be16(+v)));
+  }
+  return mk(t,dataBox(1,new TextEncoder().encode(v)));
+}
+function patchOffsets(m,oldEnd,delta){
+  const dv=new DataView(m.buffer,m.byteOffset,m.byteLength);
+  const walk=(s,e)=>{
+    for(const x of boxes(m,s,e)){
+      if(['trak','mdia','minf','stbl'].includes(x.type)) walk(x.start+x.hdr,x.end);
+      else if(x.type==='stco'||x.type==='co64'){
+        const n=dv.getUint32(x.start+x.hdr+4); let p=x.start+x.hdr+8;
+        for(let i=0;i<n;i++){
+          if(x.type==='stco'){
+            const v=dv.getUint32(p);
+            if(v>=oldEnd){ const nv=v+delta; if(nv<0||nv>0xFFFFFFFF) throw new Error('File too big to re-index.'); dv.setUint32(p,nv); }
+            p+=4;
+          } else {
+            const v=Number(dv.getBigUint64(p));
+            if(v>=oldEnd) dv.setBigUint64(p,BigInt(v+delta));
+            p+=8;
+          }
+        }
+      }
+    }
+  };
+  walk(8,m.length);
+}
+function buildMp4(){
+  const m=S.mp4, b=m.buf, drop=new Set(), add=[];
+  for(const f of FIELDS){
+    if(S.vals[f.k]===S.orig[f.k]) continue;
+    drop.add(f.mp4); if(f.k==='genre') drop.add('gnre');
+    if(S.vals[f.k]) add.push(mp4Item(f,S.vals[f.k]));
+  }
+  if(S.cover.state!=='keep'){
+    drop.add('covr');
+    if(S.cover.state==='new') add.push(mk('covr',dataBox(S.cover.mime==='image/png'?14:13,S.cover.data)));
+  }
+  const kept=m.items.filter(x=>!drop.has(x.type)).map(x=>b.subarray(x.start,x.end));
+  const ilst=mk('ilst',...kept,...add);
+  let hdlr=null; const metaKids=[];
+  for(const x of m.metaKids){
+    if(x.type==='hdlr') hdlr=b.subarray(x.start,x.end);
+    else if(x.type!=='ilst'&&x.type!=='free') metaKids.push(b.subarray(x.start,x.end));
+  }
+  const meta=mk('meta',be32(0),hdlr||HDLR,ilst,...metaKids);
+  const uk=m.udta?boxes(b,m.udta.start+m.udta.hdr,m.udta.end).filter(x=>x.type!=='meta').map(x=>b.subarray(x.start,x.end)):[];
+  const udta=mk('udta',...uk,meta);
+  const parts=[]; let placed=false;
+  for(const x of m.kids){
+    if(x===m.udta){ parts.push(udta); placed=true; }
+    else parts.push(b.subarray(x.start,x.end));
+  }
+  if(!placed) parts.push(udta);
+  const moov=mk('moov',...parts);
+  const delta=moov.length-(m.moov.end-m.moov.start);
+  if(delta) patchOffsets(moov,m.moov.end,delta);
+  return concat([b.subarray(0,m.moov.start),moov,b.subarray(m.moov.end)]);
+}
+
+/* ---------- build + self-check ---------- */
+async function buildOut(){ return S.kind==='mp3'?buildMp3():S.kind==='mp4'?buildMp4():await buildFlac(); }
+async function sha(b){ return hex(await crypto.subtle.digest('SHA-256',b)); }
+async function verifyOut(out){
+  const keep=S, bad=[];
+  try{
+    const d=detect(out);
+    if(d.kind!==keep.kind) return ['the new file does not look like a valid '+KIND_NAME[keep.kind]];
+    const t={file:keep.file,orig:{},vals:{},cover:null,kind:keep.kind};
+    S=t;
+    if(t.kind==='mp3'){ Object.assign(t,parseMp3(out)); readMp3(); }
+    else if(t.kind==='mp4'){ Object.assign(t,parseMp4(out)); readMp4(); }
+    else { Object.assign(t,parseFlac(out)); readFlac(); }
+    for(const f of FIELDS){
+      let a=keep.vals[f.k], c=t.vals[f.k];
+      if(f.k==='year'&&keep.kind==='mp3'&&keep.ver===3) a=(a.match(/^\d{4}/)||[a])[0];
+      if(f.k==='track'||f.k==='disc'){ a=normNum(a); c=normNum(c); }
+      if(a!==c) bad.push(f.label+' did not get saved');
+    }
+    const want = keep.cover.state==='new'?keep.cover.data : keep.cover.state==='none'?null : (keep.cover.orig?keep.cover.orig.data:null);
+    const got = t.cover.orig?t.cover.orig.data:null;
+    if(!same(want,got)) bad.push('cover art did not get saved');
+    if(keep.audio.length!==t.audio.length||await sha(keep.audio)!==await sha(t.audio)) bad.push('audio data changed');
+  }catch(e){ bad.push('could not re-read the new file ('+e.message+')'); }
+  finally{ S=keep; }
+  return bad;
+}
+
+/* ---------- UI ---------- */
+let S=null;
+const msg=(t,cls)=>{ $('#msg').textContent=t; $('#msg').className=cls||''; };
+const EXT = {mp3:'.mp3',flac:'.flac',mp4:'.m4a'};
+
+/* Big covers (phone photos are 5-10 MB) make Android ignore ALL tags (its limit is ~3 MB),
+   so a new cover is shrunk to max 1200px / under ~800 KB. Only the picture changes, never the audio. */
+async function shrinkCover(data,mime){
+  const MAXPX=1200, MAXBYTES=800*1024;
+  const bmp=await createImageBitmap(new Blob([data],{type:mime}));
+  const long=Math.max(bmp.width,bmp.height);
+  if((mime==='image/jpeg'||mime==='image/png')&&data.length<=MAXBYTES&&long<=MAXPX) return {data,mime,changed:false,w:bmp.width,h:bmp.height};
+  const sc=Math.min(1,MAXPX/long), w=Math.max(1,Math.round(bmp.width*sc)), h=Math.max(1,Math.round(bmp.height*sc));
+  const c=document.createElement('canvas'); c.width=w; c.height=h;
+  const g=c.getContext('2d'); g.fillStyle='#000'; g.fillRect(0,0,w,h); g.drawImage(bmp,0,0,w,h);
+  let out=null;
+  for(const q of [0.92,0.85,0.75,0.6]){
+    const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',q));
+    if(!blob) throw new Error('image encode failed');
+    out=new Uint8Array(await blob.arrayBuffer());
+    if(out.length<=MAXBYTES) break;
+  }
+  return {data:out,mime:'image/jpeg',changed:true,w,h};
+}
+
+async function load(file){
+  try{
+    msg('');
+    const buf=new Uint8Array(await file.arrayBuffer());
+    const d=detect(buf);
+    if(!['mp3','flac','mp4'].includes(d.kind))
+      throw new Error('This file is really '+KIND_NAME[d.kind]+' inside, not MP3, FLAC or M4A. This editor only handles those three, so I am not touching it (changing it could break the file).');
+    S={file,orig:{},vals:{},cover:null,kind:d.kind};
+    if(d.kind==='flac'){ Object.assign(S,parseFlac(buf)); readFlac(); }
+    else if(d.kind==='mp3'){ Object.assign(S,parseMp3(buf)); readMp3(); }
+    else { Object.assign(S,parseMp4(buf.subarray(d.off||0))); readMp4(); }
+    const ext=(file.name.match(/\.[^.]+$/)||[''])[0].toLowerCase();
+    const okExt = d.kind==='mp4' ? ['.m4a','.mp4','.m4b'].includes(ext) : ext===EXT[d.kind];
+    if(!okExt) msg('Heads up: this file is named "'+ext+'" but it is really '+KIND_NAME[d.kind]+' inside. I will save it as '+EXT[d.kind]+' so players can read it properly.','warn');
+    if(S.player) URL.revokeObjectURL(S.player);
+    S.player=URL.createObjectURL(file);
+    $('#player').src=S.player;
+    $('#editor').hidden=false;
+    render();
+  }catch(e){ msg(e.message,'err'); $('#editor').hidden=true; }
+}
+
+function render(){
+  const box=$('#fields'); box.innerHTML='';
+  for(const f of FIELDS){
+    const w=document.createElement('label'); w.className='f'+(f.long?' long':'');
+    w.innerHTML='<span>'+f.label+'</span>';
+    const el=document.createElement(f.long?'textarea':'input');
+    if(f.long) el.rows=4;
+    el.value=S.vals[f.k];
+    el.oninput=()=>{ S.vals[f.k]=el.value; };
+    w.append(el); box.append(w);
+  }
+  renderCover(); renderInfo();
+}
+
+const curCover=()=>S.cover.state==='new'?S.cover:S.cover.state==='keep'?S.cover.orig:null;
+function renderCover(){
+  if(S.coverUrl) URL.revokeObjectURL(S.coverUrl);
+  const c=curCover(), img=$('#coverImg');
+  if(c){
+    S.coverUrl=URL.createObjectURL(new Blob([c.data],{type:c.mime}));
+    img.onload=()=>{ $('#coverInfo').textContent=img.naturalWidth+'×'+img.naturalHeight+' · '+c.mime.replace('image/','').toUpperCase()+' · '+fmtSize(c.data.length); };
+    img.src=S.coverUrl; img.hidden=false; $('#coverEmpty').hidden=true;
+  } else {
+    img.hidden=true; $('#coverEmpty').hidden=false; $('#coverInfo').textContent='No cover art in this file';
+  }
+  $('#coverSave').disabled=$('#coverRemove').disabled=!c;
+}
+
+async function renderInfo(){
+  const rows=[['File',S.file.name],['Size',fmtSize(S.file.size)],['Real format',KIND_NAME[S.kind]+(S.kind==='mp3'?' · ID3v2.'+S.ver:'')]];
+  if(S.kind==='flac'){
+    const d=S.blocks.find(b=>b.type===0)?.data;
+    if(d&&d.length>=18) rows.push(['Audio',(d[10]<<12|d[11]<<4|d[12]>>4)+' Hz · '+(((d[12]>>1)&7)+1)+' ch · '+((((d[12]&1)<<4)|(d[13]>>4))+1)+'-bit']);
+  }
+  rows.push(['Audio data',fmtSize(S.audio.length)+' · copied untouched']);
+  try{ rows.push(['Audio SHA-256',(await sha(S.audio)).slice(0,20)+'…']); }catch{}
+  $('#info').innerHTML=rows.map(r=>'<tr><td>'+r[0]+'</td><td>'+String(r[1]).replace(/</g,'&lt;')+'</td></tr>').join('');
+}
+
+$('#file').onchange=e=>{ if(e.target.files[0]) load(e.target.files[0]); e.target.value=''; };
+const drop=$('#drop');
+drop.ondragover=e=>{ e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave=()=>drop.classList.remove('over');
+drop.ondrop=e=>{ e.preventDefault(); drop.classList.remove('over'); if(e.dataTransfer.files[0]) load(e.dataTransfer.files[0]); };
+
+$('#coverChange').onclick=()=>$('#coverFile').click();
+$('#coverFile').onchange=async e=>{
+  const f=e.target.files[0]; if(!f) return;
+  try{
+    let data=new Uint8Array(await f.arrayBuffer()), mime=sniff(data)||f.type||'image/jpeg';
+    const before=data.length;
+    const r=await shrinkCover(data,mime);
+    S.cover={state:'new',orig:S.cover.orig,mime:r.mime,data:r.data};
+    renderCover();
+    if(r.changed) msg('Cover was '+fmtSize(before)+', shrunk to '+fmtSize(r.data.length)+' ('+r.w+'×'+r.h+'). Huge covers make Android ignore ALL the tags, so this keeps it safe. The audio is untouched.','warn');
+    else msg('');
+  }catch(err){ msg('Could not read that image. Use a normal JPG or PNG.','err'); }
+  e.target.value='';
+};
+$('#coverRemove').onclick=()=>{ S.cover={state:'none',orig:S.cover.orig}; renderCover(); };
+$('#coverSave').onclick=()=>{
+  const c=curCover(); if(!c) return;
+  const url=URL.createObjectURL(new Blob([c.data],{type:c.mime}));
+  const a=document.createElement('a'); a.href=url;
+  a.download='cover.'+(c.mime.split('/')[1]||'jpg').replace('jpeg','jpg'); a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
+};
+$('#reset').onclick=()=>load(S.file);
+
+$('#download').onclick=async()=>{
+  try{
+    msg('Building…');
+    const out=await buildOut();
+    if(S.kind==='mp3'&&out.length-S.audio.length>3000000)
+      throw new Error('NOT downloaded: the tag block would be '+fmtSize(out.length-S.audio.length)+'. Android music apps ignore ALL tags when they are bigger than about 3 MB (title, artist and cover all vanish). Tap "Change cover" and pick a smaller image, or tap Remove.');
+    const bad=await verifyOut(out);
+    if(bad.length) throw new Error('NOT downloaded, the self-check failed:\n- '+bad.join('\n- ')+'\nNothing was saved, your original file is untouched.');
+    const mime={mp3:'audio/mpeg',flac:'audio/flac',mp4:'audio/mp4'}[S.kind];
+    const url=URL.createObjectURL(new Blob([out],{type:mime}));
+    const ext=S.kind==='mp4'?(S.file.name.match(/\.(m4a|mp4|m4b)$/i)||['.m4a'])[0].toLowerCase():EXT[S.kind];
+    const a=document.createElement('a'); a.href=url;
+    a.download=S.file.name.replace(/\.[^.]+$/,'')+' (edited)'+ext; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+    msg('Downloaded ✓ Self-check passed: all tags + cover re-read from the new file, and the audio data is byte-for-byte identical.');
+  }catch(e){ msg(e.message,'err'); }
+};
+</script>
+</body>
+</html>
