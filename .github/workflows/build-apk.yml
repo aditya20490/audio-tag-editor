@@ -26,13 +26,20 @@ jobs:
       - name: Install packages
         run: npm install
 
-      - name: Add the save helper to the page
-        run: sed -i 's#</head>#<script src="native-save.js"></script></head>#' www/index.html
+      - name: Add layout, save helper and crop tool to the page
+        run: |
+          sed -i 's#</head>#<link rel="stylesheet" href="app.css"><script src="native-save.js"></script></head>#' www/index.html
+          sed -i 's#</body>#<script src="crop.js"></script></body>#' www/index.html
 
       - name: Create Android project
         run: |
           npx cap add android
           npx cap sync android
+
+      - name: Allow saving into the Download folder
+        run: |
+          sed -i 's#<application#<application android:requestLegacyExternalStorage="true"#' android/app/src/main/AndroidManifest.xml
+          sed -i 's#</manifest>#<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/></manifest>#' android/app/src/main/AndroidManifest.xml
 
       - name: Build APK
         run: |
