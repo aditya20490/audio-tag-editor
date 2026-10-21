@@ -495,24 +495,18 @@ let S=null;
 const msg=(t,cls)=>{ $('#msg').textContent=t; $('#msg').className=cls||''; };
 const EXT = {mp3:'.mp3',flac:'.flac',mp4:'.m4a'};
 
-/* Big covers (phone photos are 5-10 MB) make Android ignore ALL tags (its limit is ~3 MB),
-   so a new cover is shrunk to max 1200px / under ~800 KB. Only the picture changes, never the audio. */
+/* Covers are kept EXACTLY as you picked them: same pixels, same file size (a 10 MB cover stays 10 MB).
+   The only exception is a format that tag players cannot show (WEBP, HEIC, GIF...): that one is converted
+   to a JPEG at the highest quality, same pixel size. JPEG and PNG are never touched. */
 async function shrinkCover(data,mime){
-  const MAXPX=1200, MAXBYTES=800*1024;
-  const bmp=await createImageBitmap(new Blob([data],{type:mime}));
-  const long=Math.max(bmp.width,bmp.height);
-  if((mime==='image/jpeg'||mime==='image/png')&&data.length<=MAXBYTES&&long<=MAXPX) return {data,mime,changed:false,w:bmp.width,h:bmp.height};
-  const sc=Math.min(1,MAXPX/long), w=Math.max(1,Math.round(bmp.width*sc)), h=Math.max(1,Math.round(bmp.height*sc));
+  let w=0,h=0,bmp=null;
+  try{ bmp=await createImageBitmap(new Blob([data],{type:mime})); w=bmp.width; h=bmp.height; }catch(e){}
+  if(mime==='image/jpeg'||mime==='image/png'||!bmp) return {data,mime,changed:false,w,h};
   const c=document.createElement('canvas'); c.width=w; c.height=h;
   const g=c.getContext('2d'); g.fillStyle='#000'; g.fillRect(0,0,w,h); g.drawImage(bmp,0,0,w,h);
-  let out=null;
-  for(const q of [0.92,0.85,0.75,0.6]){
-    const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',q));
-    if(!blob) throw new Error('image encode failed');
-    out=new Uint8Array(await blob.arrayBuffer());
-    if(out.length<=MAXBYTES) break;
-  }
-  return {data:out,mime:'image/jpeg',changed:true,w,h};
+  const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',1));
+  if(!blob) throw new Error('image encode failed');
+  return {data:new Uint8Array(await blob.arrayBuffer()),mime:'image/jpeg',changed:true,w,h};
 }
 
 async function load(file){
@@ -591,7 +585,7 @@ $('#coverFile').onchange=async e=>{
     const r=await shrinkCover(data,mime);
     S.cover={state:'new',orig:S.cover.orig,mime:r.mime,data:r.data};
     renderCover();
-    if(r.changed) msg('Cover was '+fmtSize(before)+', shrunk to '+fmtSize(r.data.length)+' ('+r.w+'×'+r.h+'). Huge covers make Android ignore ALL the tags, so this keeps it safe. The audio is untouched.','warn');
+    if(r.changed) msg('That picture format cannot be shown by music players, so it was converted to JPEG at full quality ('+r.w+'×'+r.h+', '+fmtSize(r.data.length)+'). Nothing was shrunk.','warn');
     else msg('');
   }catch(err){ msg('Could not read that image. Use a normal JPG or PNG.','err'); }
   e.target.value='';
@@ -610,8 +604,7 @@ $('#download').onclick=async()=>{
   try{
     msg('Building…');
     const out=await buildOut();
-    if(S.kind==='mp3'&&out.length-S.audio.length>3000000)
-      throw new Error('NOT downloaded: the tag block would be '+fmtSize(out.length-S.audio.length)+'. Android music apps ignore ALL tags when they are bigger than about 3 MB (title, artist and cover all vanish). Tap "Change cover" and pick a smaller image, or tap Remove.');
+    const bigTag = S.kind==='mp3'&&out.length-S.audio.length>3000000;
     const bad=await verifyOut(out);
     if(bad.length) throw new Error('NOT downloaded, the self-check failed:\n- '+bad.join('\n- ')+'\nNothing was saved, your original file is untouched.');
     const mime={mp3:'audio/mpeg',flac:'audio/flac',mp4:'audio/mp4'}[S.kind];
@@ -620,7 +613,7 @@ $('#download').onclick=async()=>{
     const a=document.createElement('a'); a.href=url;
     a.download=S.file.name.replace(/\.[^.]+$/,'')+' (edited)'+ext; a.click();
     setTimeout(()=>URL.revokeObjectURL(url),60000);
-    msg('Downloaded ✓ Self-check passed: all tags + cover re-read from the new file, and the audio data is byte-for-byte identical.');
+    msg('Downloaded ✓ Self-check passed: all tags + cover re-read from the new file, and the audio data is byte-for-byte identical.'+(bigTag?'\nNote: the cover is big ('+fmtSize(out.length-S.audio.length)+' of tags). Super Listener shows it fine, but a few other Android music apps ignore tags above ~3 MB.':''));
   }catch(e){ msg(e.message,'err'); }
 };
 </script>
