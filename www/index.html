@@ -36,6 +36,15 @@ audio{width:100%;margin-top:14px}
 #msg{margin-top:12px;min-height:20px;color:#7be39a;font-size:14px;white-space:pre-line}
 #msg.err{color:#ff7b7b}
 #msg.warn{color:#ffd37b}
+.lab{font-size:12px;color:#7c9cff;text-transform:uppercase;letter-spacing:.04em;font-weight:600;margin-bottom:6px}
+.xhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.xhead b{font-size:15px}
+#extraInfo{color:#888;font-size:13px;margin-top:4px}
+#extraList{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-top:12px}
+.x{background:#000;border:1px solid #222;border-radius:12px;padding:8px;display:flex;flex-direction:column;gap:6px}
+.x img{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;background:#111}
+.x small{color:#888;font-size:11px;text-align:center}
+.x button{min-height:34px;padding:6px 8px;font-size:13px;border-radius:9px}
 </style>
 </head>
 <body>
@@ -53,6 +62,7 @@ audio{width:100%;margin-top:14px}
     <div class="card cover">
       <div class="pic"><img id="coverImg" hidden><span id="coverEmpty">No cover</span></div>
       <div class="side">
+        <div class="lab">Main cover (the one players show)</div>
         <div id="coverInfo" style="color:#888;font-size:13px"></div>
         <div class="btns">
           <button id="coverChange">Change cover</button>
@@ -61,6 +71,14 @@ audio{width:100%;margin-top:14px}
         </div>
         <input type="file" id="coverFile" accept="image/*" hidden>
       </div>
+    </div>
+
+    <div class="card" id="moreCard">
+      <div class="xhead"><b>More covers</b></div>
+      <div id="extraInfo"></div>
+      <div id="extraList"></div>
+      <div class="btns"><button id="extraAdd">Add more covers</button></div>
+      <input type="file" id="extraFile" accept="image/*" multiple hidden>
     </div>
 
     <div class="card" id="fields"></div>
@@ -184,7 +202,9 @@ const encWith = (enc,s) => enc===0 ? toLatin1(s) : enc===3 ? new TextEncoder().e
 const termOf = enc => enc===1 ? u8(0,0) : u8(0);
 const textFrame = (id,s,ver) => { const e=pickEnc(ver,s); return {id,flags:u8(0,0),data:concat([u8(e),encWith(e,s)])}; };
 const langFrame = (id,m,s,ver) => { const e=pickEnc(ver,m.desc,s); return {id,flags:u8(0,0),data:concat([u8(e),toLatin1(m.lang.padEnd(3,' ').slice(0,3)),encWith(e,m.desc),termOf(e),encWith(e,s)])}; };
-const apicFrame = (mime,data) => ({id:'APIC',flags:u8(0,0),data:concat([u8(0),toLatin1(mime),u8(0,3,0),data])});
+const apicFrame = (mime,data,type=3) => ({id:'APIC',flags:u8(0,0),data:concat([u8(0),toLatin1(mime),u8(0,type,0),data])});
+/* a cover that is not the main one is saved as type 0 ("other"); the main one is type 3 ("front cover") and always comes first */
+const extraType = e => (e.type&&e.type!==3)?e.type:0;
 const serFrame = (fr,ver) => concat([toLatin1(fr.id), ver===4?toSynch(fr.data.length):be32(fr.data.length), fr.flags, fr.data]);
 function deunsync(b){ const o=[]; for(let i=0;i<b.length;i++){ o.push(b[i]); if(b[i]===0xFF&&b[i+1]===0) i++; } return Uint8Array.from(o); }
 
@@ -242,6 +262,8 @@ function readMp3(){
   const aps=S.frames.filter(x=>x.id==='APIC').map(x=>parseApic(x.data)).filter(Boolean);
   const ap=aps.find(a=>a.type===3)||aps[0];
   S.cover={state:'keep',orig:ap?{mime:sniff(ap.data)||ap.mime,data:ap.data}:null};
+  S.extras=aps.filter(a=>a!==ap&&a.data.length).map(a=>({mime:sniff(a.data)||a.mime,data:a.data,type:a.type}));
+  S.extrasDirty=false;
 }
 function buildMp3(){
   const ver=S.ver; let list=S.frames.slice(); const add=[];
@@ -258,9 +280,11 @@ function buildMp3(){
       }
     }
   }
-  if(S.cover.state!=='keep'){
+  if(S.cover.state!=='keep'||S.extrasDirty){
     list=list.filter(x=>x.id!=='APIC');
-    if(S.cover.state==='new') add.push(apicFrame(S.cover.mime,S.cover.data));
+    const m=curCover();
+    if(m) add.push(apicFrame(m.mime,m.data,3));
+    for(const e of S.extras) add.push(apicFrame(e.mime,e.data,extraType(e)));
   }
   const body=concat([...list,...add].map(fr=>serFrame(fr,ver)));
   return concat([u8(0x49,0x44,0x33,ver,0,0),toSynch(body.length),body,S.audio]);
@@ -310,12 +334,14 @@ function readFlac(){
   const pics=S.blocks.filter(b=>b.type===6).map(b=>parsePic(b.data));
   const pic=pics.find(p=>p.type===3)||pics[0];
   S.cover={state:'keep',orig:pic?{mime:sniff(pic.data)||pic.mime,data:pic.data}:null};
+  S.extras=pics.filter(p=>p!==pic&&p.data.length).map(p=>({mime:sniff(p.data)||p.mime,data:p.data,type:p.type}));
+  S.extrasDirty=false;
 }
-async function picBlock(c){
+async function picBlock(c,type=3){
   let w=0,h=0;
   try{ const bm=await createImageBitmap(new Blob([c.data],{type:c.mime})); w=bm.width; h=bm.height; }catch{}
   const mime=toLatin1(c.mime);
-  return {type:6,data:concat([be32(3),be32(mime.length),mime,be32(0),be32(w),be32(h),be32(24),be32(0),be32(c.data.length),c.data])};
+  return {type:6,data:concat([be32(type),be32(mime.length),mime,be32(0),be32(w),be32(h),be32(24),be32(0),be32(c.data.length),c.data])};
 }
 async function buildFlac(){
   let list=S.vc.list.slice();
@@ -328,7 +354,12 @@ async function buildFlac(){
   const parts=[le32(S.vc.vendor.length),S.vc.vendor,le32(list.length)];
   for(const [k,v] of list){ const b=te.encode(k+'='+v); parts.push(le32(b.length),b); }
   let pics=S.blocks.filter(b=>b.type===6);
-  if(S.cover.state!=='keep'){ pics=[]; if(S.cover.state==='new') pics=[await picBlock(S.cover)]; }
+  if(S.cover.state!=='keep'||S.extrasDirty){
+    pics=[];
+    const m=curCover();
+    if(m) pics.push(await picBlock(m,3));
+    for(const e of S.extras) pics.push(await picBlock(e,extraType(e)));
+  }
   const others=S.blocks.filter(b=>![1,4,6].includes(b.type));
   const all=[...others,{type:4,data:concat(parts)},...pics];
   const out=[u8(0x66,0x4C,0x61,0x43)];
@@ -386,8 +417,11 @@ function readMp4(){
     }
     S.orig[f.k]=S.vals[f.k]=v.replace(/\r\n?/g,'\n');
   }
-  const cv=get('covr').find(d=>d.data.length>0);
+  const cvs=get('covr').filter(d=>d.data.length>0);
+  const cv=cvs[0];
   S.cover={state:'keep',orig:cv?{mime:sniff(cv.data)||(cv.flags===14?'image/png':'image/jpeg'),data:cv.data.slice()}:null};
+  S.extras=cvs.slice(1).map(d=>({mime:sniff(d.data)||(d.flags===14?'image/png':'image/jpeg'),data:d.data.slice(),type:0}));
+  S.extrasDirty=false;
 }
 const mk = (type,...parts) => { const p=concat(parts); return concat([be32(8+p.length),toLatin1(type),p]); };
 const dataBox = (flags,val) => mk('data',be32(flags),be32(0),val);
@@ -436,9 +470,12 @@ function buildMp4(){
     drop.add(f.mp4); if(f.k==='genre') drop.add('gnre');
     if(S.vals[f.k]) add.push(mp4Item(f,S.vals[f.k]));
   }
-  if(S.cover.state!=='keep'){
+  if(S.cover.state!=='keep'||S.extrasDirty){
     drop.add('covr');
-    if(S.cover.state==='new') add.push(mk('covr',dataBox(S.cover.mime==='image/png'?14:13,S.cover.data)));
+    const all=[]; const mainCover=curCover(); if(mainCover) all.push(mainCover);
+    for(const e of S.extras) all.push(e);
+    /* several covers = several "data" boxes inside ONE covr item; the first one is the main cover */
+    if(all.length) add.push(mk('covr',...all.map(c=>dataBox(c.mime==='image/png'?14:13,c.data))));
   }
   const kept=m.items.filter(x=>!drop.has(x.type)).map(x=>b.subarray(x.start,x.end));
   const ilst=mk('ilst',...kept,...add);
@@ -470,7 +507,7 @@ async function verifyOut(out){
   try{
     const d=detect(out);
     if(d.kind!==keep.kind) return ['the new file does not look like a valid '+KIND_NAME[keep.kind]];
-    const t={file:keep.file,orig:{},vals:{},cover:null,kind:keep.kind};
+    const t={file:keep.file,orig:{},vals:{},cover:null,kind:keep.kind,extras:[],extrasDirty:false};
     S=t;
     if(t.kind==='mp3'){ Object.assign(t,parseMp3(out)); readMp3(); }
     else if(t.kind==='mp4'){ Object.assign(t,parseMp4(out)); readMp4(); }
@@ -484,6 +521,8 @@ async function verifyOut(out){
     const want = keep.cover.state==='new'?keep.cover.data : keep.cover.state==='none'?null : (keep.cover.orig?keep.cover.orig.data:null);
     const got = t.cover.orig?t.cover.orig.data:null;
     if(!same(want,got)) bad.push('cover art did not get saved');
+    const wx=keep.extras||[], gx=t.extras||[];
+    if(wx.length!==gx.length||wx.some((e,i)=>!same(e.data,gx[i].data))) bad.push('the extra covers did not get saved');
     if(keep.audio.length!==t.audio.length||await sha(keep.audio)!==await sha(t.audio)) bad.push('audio data changed');
   }catch(e){ bad.push('could not re-read the new file ('+e.message+')'); }
   finally{ S=keep; }
@@ -516,7 +555,7 @@ async function load(file){
     const d=detect(buf);
     if(!['mp3','flac','mp4'].includes(d.kind))
       throw new Error('This file is really '+KIND_NAME[d.kind]+' inside, not MP3, FLAC or M4A. This editor only handles those three, so I am not touching it (changing it could break the file).');
-    S={file,orig:{},vals:{},cover:null,kind:d.kind};
+    S={file,orig:{},vals:{},cover:null,kind:d.kind,extras:[],extrasDirty:false};
     if(d.kind==='flac'){ Object.assign(S,parseFlac(buf)); readFlac(); }
     else if(d.kind==='mp3'){ Object.assign(S,parseMp3(buf)); readMp3(); }
     else { Object.assign(S,parseMp4(buf.subarray(d.off||0))); readMp4(); }
@@ -542,7 +581,7 @@ function render(){
     el.oninput=()=>{ S.vals[f.k]=el.value; };
     w.append(el); box.append(w);
   }
-  renderCover(); renderInfo();
+  renderCover(); renderExtras(); renderInfo();
 }
 
 const curCover=()=>S.cover.state==='new'?S.cover:S.cover.state==='keep'?S.cover.orig:null;
@@ -565,6 +604,7 @@ async function renderInfo(){
     const d=S.blocks.find(b=>b.type===0)?.data;
     if(d&&d.length>=18) rows.push(['Audio',(d[10]<<12|d[11]<<4|d[12]>>4)+' Hz · '+(((d[12]>>1)&7)+1)+' ch · '+((((d[12]&1)<<4)|(d[13]>>4))+1)+'-bit']);
   }
+  rows.push(['Covers',((curCover()?1:0)+S.extras.length)+(S.extras.length?' (1 main + '+S.extras.length+' more)':'')]);
   rows.push(['Audio data',fmtSize(S.audio.length)+' · copied untouched']);
   try{ rows.push(['Audio SHA-256',(await sha(S.audio)).slice(0,20)+'…']); }catch{}
   $('#info').innerHTML=rows.map(r=>'<tr><td>'+r[0]+'</td><td>'+String(r[1]).replace(/</g,'&lt;')+'</td></tr>').join('');
@@ -575,6 +615,59 @@ const drop=$('#drop');
 drop.ondragover=e=>{ e.preventDefault(); drop.classList.add('over'); };
 drop.ondragleave=()=>drop.classList.remove('over');
 drop.ondrop=e=>{ e.preventDefault(); drop.classList.remove('over'); if(e.dataTransfer.files[0]) load(e.dataTransfer.files[0]); };
+
+/* ---------- more covers ---------- */
+let extraUrls=[];
+function renderExtras(){
+  extraUrls.forEach(u=>URL.revokeObjectURL(u)); extraUrls=[];
+  const box=$('#extraList'); box.innerHTML='';
+  const n=S.extras.length;
+  $('#extraInfo').textContent = n ? n+' more cover'+(n>1?'s':'')+' saved inside the file. Tap "Make main" to pick which one players show first.' : 'Add 2-3 covers you like and keep them all inside the file. The main cover is the one shown by players.';
+  S.extras.forEach((e,i)=>{
+    const url=URL.createObjectURL(new Blob([e.data],{type:e.mime})); extraUrls.push(url);
+    const w=document.createElement('div'); w.className='x';
+    const im=document.createElement('img'); im.src=url;
+    const sm=document.createElement('small'); sm.textContent=e.mime.replace('image/','').toUpperCase()+' · '+fmtSize(e.data.length);
+    const b1=document.createElement('button'); b1.textContent='Make main'; b1.onclick=()=>makeMain(i);
+    const b2=document.createElement('button'); b2.textContent='Remove'; b2.onclick=()=>{ S.extras.splice(i,1); S.extrasDirty=true; renderExtras(); renderInfo(); };
+    w.append(im,sm,b1,b2); box.append(w);
+  });
+}
+function makeMain(i){
+  const e=S.extras.splice(i,1)[0]; if(!e) return;
+  const old=curCover();
+  if(old) S.extras.unshift({mime:old.mime,data:old.data,type:0});
+  S.cover={state:'new',orig:S.cover.orig,mime:e.mime,data:e.data};
+  S.extrasDirty=true;
+  renderCover(); renderExtras(); renderInfo();
+  msg('That cover is now the main one. Tap "Download edited file" to save it into the song.');
+}
+const hasCover = data => (curCover()&&same(curCover().data,data)) || S.extras.some(e=>same(e.data,data));
+$('#extraAdd').onclick=()=>$('#extraFile').click();
+$('#extraFile').onchange=async e=>{
+  const files=[...e.target.files]; e.target.value='';
+  if(!files.length) return;
+  let added=0, skipped=0, converted=0, failed=0;
+  for(const f of files){
+    try{
+      const raw=new Uint8Array(await f.arrayBuffer());
+      const r=await shrinkCover(raw,sniff(raw)||f.type||'image/jpeg');
+      if(hasCover(r.data)){ skipped++; continue; }
+      if(r.changed) converted++;
+      if(!curCover()) S.cover={state:'new',orig:S.cover.orig,mime:r.mime,data:r.data};
+      else S.extras.push({mime:r.mime,data:r.data,type:0});
+      added++;
+    }catch(err){ failed++; }
+  }
+  if(added) S.extrasDirty=true;
+  renderCover(); renderExtras(); renderInfo();
+  let t=added+' cover'+(added===1?'':'s')+' added.';
+  if(skipped) t+=' '+skipped+' skipped (already in the list).';
+  if(converted) t+=' '+converted+' converted to JPEG at full quality.';
+  if(failed) t+=' '+failed+' could not be read (use JPG or PNG).';
+  if(added) t+=' Tap "Download edited file" to save them into the song.';
+  msg(t, failed&&!added?'err':'');
+};
 
 $('#coverChange').onclick=()=>$('#coverFile').click();
 $('#coverFile').onchange=async e=>{
@@ -590,7 +683,15 @@ $('#coverFile').onchange=async e=>{
   }catch(err){ msg('Could not read that image. Use a normal JPG or PNG.','err'); }
   e.target.value='';
 };
-$('#coverRemove').onclick=()=>{ S.cover={state:'none',orig:S.cover.orig}; renderCover(); };
+$('#coverRemove').onclick=()=>{
+  if(S.extras.length){
+    const e=S.extras.shift();
+    S.cover={state:'new',orig:S.cover.orig,mime:e.mime,data:e.data};
+    S.extrasDirty=true;
+    msg('Main cover removed. The next cover is now the main one.');
+  } else S.cover={state:'none',orig:S.cover.orig};
+  renderCover(); renderExtras(); renderInfo();
+};
 $('#coverSave').onclick=()=>{
   const c=curCover(); if(!c) return;
   const url=URL.createObjectURL(new Blob([c.data],{type:c.mime}));
@@ -613,7 +714,7 @@ $('#download').onclick=async()=>{
     const a=document.createElement('a'); a.href=url;
     a.download=S.file.name.replace(/\.[^.]+$/,'')+' (edited)'+ext; a.click();
     setTimeout(()=>URL.revokeObjectURL(url),60000);
-    msg('Downloaded ✓ Self-check passed: all tags + cover re-read from the new file, and the audio data is byte-for-byte identical.'+(bigTag?'\nNote: the cover is big ('+fmtSize(out.length-S.audio.length)+' of tags). Super Listener shows it fine, but a few other Android music apps ignore tags above ~3 MB.':''));
+    msg('Downloaded ✓ Self-check passed: all tags + '+((curCover()?1:0)+S.extras.length)+' cover(s) re-read from the new file, and the audio data is byte-for-byte identical.'+(bigTag?'\nNote: the cover is big ('+fmtSize(out.length-S.audio.length)+' of tags). Super Listener shows it fine, but a few other Android music apps ignore tags above ~3 MB.':''));
   }catch(e){ msg(e.message,'err'); }
 };
 </script>
