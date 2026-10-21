@@ -98,8 +98,8 @@ public class AudioLibraryPlugin extends Plugin {
 
     @PluginMethod
     public void copy(PluginCall call) {
-        final Long id = call.getLong("id");
-        if (id == null) {
+        final long id = call.getData().optLong("id", -1);
+        if (id < 0) {
             call.reject("No song chosen");
             return;
         }
