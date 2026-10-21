@@ -10,6 +10,10 @@
     dropEl.lastChild.nodeValue = 'Tap to choose an audio file';
   }
 
+  /* make the phone's file picker fast: ask for plain "audio" only */
+  var fileIn = q('#file');
+  if (fileIn) fileIn.setAttribute('accept', 'audio/*');
+
   /* crop screen */
   var ov = document.createElement('div');
   ov.id = 'cropOv';
