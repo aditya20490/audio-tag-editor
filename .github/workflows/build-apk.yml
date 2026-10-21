@@ -26,20 +26,26 @@ jobs:
       - name: Install packages
         run: npm install
 
-      - name: Add layout, save helper and crop tool to the page
+      - name: Add layout, save helper, crop tool and song browser to the page
         run: |
           sed -i 's#</head>#<link rel="stylesheet" href="app.css"><script src="native-save.js"></script></head>#' www/index.html
-          sed -i 's#</body>#<script src="crop.js"></script></body>#' www/index.html
+          sed -i 's#</body>#<script src="crop.js"></script><script src="songs.js"></script></body>#' www/index.html
 
       - name: Create Android project
         run: |
           npx cap add android
           npx cap sync android
 
-      - name: Allow saving into the Download folder
+      - name: Add the song library reader
+        run: |
+          mkdir -p android/app/src/main/java/com/jrj/audiotageditor
+          cp native/AudioLibraryPlugin.java android/app/src/main/java/com/jrj/audiotageditor/AudioLibraryPlugin.java
+          cp native/MainActivity.java android/app/src/main/java/com/jrj/audiotageditor/MainActivity.java
+
+      - name: Allow saving and reading music
         run: |
           sed -i 's#<application#<application android:requestLegacyExternalStorage="true"#' android/app/src/main/AndroidManifest.xml
-          sed -i 's#</manifest>#<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/></manifest>#' android/app/src/main/AndroidManifest.xml
+          sed -i 's#</manifest>#<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/><uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/><uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/></manifest>#' android/app/src/main/AndroidManifest.xml
 
       - name: Build APK
         run: |
