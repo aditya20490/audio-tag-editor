@@ -137,10 +137,11 @@
       var g = cv.getContext('2d');
       g.fillStyle = '#000'; g.fillRect(0, 0, sw, sh);
       g.drawImage(bmp, sx, sy, sw, sh, 0, 0, sw, sh);
-      var blob = await new Promise(function (res) { cv.toBlob(res, 'image/jpeg', 0.95); });
+      var keepPng = c.mime === 'image/png';
+      var blob = await new Promise(function (res) { cv.toBlob(res, keepPng ? 'image/png' : 'image/jpeg', 1); });
       if (!blob) throw new Error('encode failed');
       var data = new Uint8Array(await blob.arrayBuffer());
-      var out = await shrinkCover(data, 'image/jpeg');
+      var out = await shrinkCover(data, keepPng ? 'image/png' : 'image/jpeg');
       S.cover = { state: 'new', orig: S.cover.orig, mime: out.mime, data: out.data };
       closeCrop();
       renderCover();
