@@ -41,7 +41,7 @@ textarea { min-height: 110px; }
 td { font-size: 13px; line-height: 1.5; }
 td:first-child { width: 96px; }
 
-audio { width: 100%; margin-top: 16px; }
+/* the preview bar (.pv) is styled in index.html; the native <audio> bar is no longer shown */
 
 button.primary {
   position: sticky;
@@ -69,13 +69,15 @@ button.primary {
 #cropStage { position: relative; touch-action: none; user-select: none; -webkit-user-select: none; }
 #cropStage img { display: block; width: 100%; height: 100%; pointer-events: none; -webkit-user-drag: none; }
 #cropBox {
-  position: absolute; border: 2px solid #fff; cursor: move; touch-action: none;
+  position: absolute; border: 2px solid #fff; cursor: move; touch-action: none; transition: border-color .16s ease;
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, .65);
   background-image: linear-gradient(rgba(255,255,255,.35) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.35) 1px, transparent 1px);
   background-size: 100% 33.333%, 33.333% 100%;
 }
 .hd { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px; touch-action: none; }
-.hd::after { content: ""; position: absolute; left: 10px; top: 10px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 2px rgba(0,0,0,.5); }
+.hd::after { content: ""; position: absolute; left: 10px; top: 10px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 2px rgba(0,0,0,.5); transition: transform .16s cubic-bezier(.34,1.5,.64,1), box-shadow .16s ease; }
+.hd.act::after { transform: scale(1.45); box-shadow: 0 0 0 2px rgba(0,0,0,.5), 0 0 0 8px rgba(124,156,255,.35); }
+#cropBox.grab { border-color: #7c9cff; }
 .hd.nw { left: 0; top: 0; } .hd.n { left: 50%; top: 0; } .hd.ne { left: 100%; top: 0; }
 .hd.e { left: 100%; top: 50%; } .hd.se { left: 100%; top: 100%; } .hd.s { left: 50%; top: 100%; }
 .hd.sw { left: 0; top: 100%; } .hd.w { left: 0; top: 50%; }
