@@ -10,6 +10,13 @@
   };
   var MAXROWS = 300;
 
+  /* smooth open/close comes from index.html (window.TagUI); plain fallbacks keep this file safe on its own */
+  var ui = window.TagUI || {
+    show: function (e) { e.hidden = false; },
+    hide: function (e) { e.hidden = true; },
+    haptic: function () {}
+  };
+
   /* styles for the song browser */
   var st = document.createElement('style');
   st.textContent =
@@ -69,7 +76,7 @@
   }
 
   async function openBrowse() {
-    ov.hidden = false;
+    ui.show(ov);
     info.textContent = 'Loading your songs…';
     list.innerHTML = '';
     try {
@@ -99,7 +106,7 @@
       var ext = ((it.name.match(/\.([^.]+)$/) || [])[1] || '').toLowerCase();
       var type = { mp3: 'audio/mpeg', flac: 'audio/flac', m4a: 'audio/mp4', mp4: 'audio/mp4', m4b: 'audio/mp4' }[ext] || blob.type || '';
       var file = new File([blob], it.name, { type: type });
-      ov.hidden = true;
+      ui.hide(ov);
       load(file);
     } catch (e) {
       info.textContent = 'Could not open that song: ' + (e && e.message ? e.message : e);
@@ -107,7 +114,7 @@
   }
 
   btn.onclick = openBrowse;
-  q('#songBack').onclick = function () { ov.hidden = true; };
+  q('#songBack').onclick = function () { ui.hide(ov); };
   qin.oninput = draw;
   list.onclick = function (e) {
     var row = e.target.closest ? e.target.closest('.srow') : null;
