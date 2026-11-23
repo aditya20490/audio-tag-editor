@@ -4,6 +4,13 @@
   var q = function (s) { return document.querySelector(s); };
   var clamp = function (v, a, b) { return Math.max(a, Math.min(b, v)); };
 
+  /* smooth open/close + haptics come from index.html (window.TagUI); plain fallbacks keep this file safe on its own */
+  var ui = window.TagUI || {
+    show: function (e) { e.hidden = false; },
+    hide: function (e) { e.hidden = true; },
+    haptic: function () {}
+  };
+
   /* small wording tweak on the file picker box */
   var dropEl = q('#drop');
   if (dropEl && dropEl.lastChild && dropEl.lastChild.nodeType === 3) {
@@ -36,7 +43,7 @@
     var b = document.createElement('button');
     b.className = 'chip';
     b.textContent = x[0];
-    b.onclick = function () { setRatio(x[1], i); };
+    b.onclick = function () { ui.haptic(10); setRatio(x[1], i); };
     rb.appendChild(b);
   });
 
@@ -64,7 +71,7 @@
   function openCrop() {
     var c = curCover();
     if (!c) return;
-    ov.hidden = false;
+    ui.show(ov);
     if (url) URL.revokeObjectURL(url);
     url = URL.createObjectURL(new Blob([c.data], { type: c.mime }));
     img.onload = function () {
@@ -83,13 +90,17 @@
   }
 
   function closeCrop() {
-    ov.hidden = true;
-    if (url) { URL.revokeObjectURL(url); url = null; }
+    ui.hide(ov);
+    /* keep the picture alive until the slide-down finishes */
+    if (url) { var old = url; url = null; setTimeout(function () { URL.revokeObjectURL(old); }, 500); }
   }
 
   box.addEventListener('pointerdown', function (e) {
     var t = (e.target && e.target.getAttribute && e.target.getAttribute('data-h')) || 'move';
-    drag = { t: t, x: e.clientX, y: e.clientY, r: { x: r.x, y: r.y, w: r.w, h: r.h } };
+    drag = { t: t, x: e.clientX, y: e.clientY, r: { x: r.x, y: r.y, w: r.w, h: r.h }, el: (t === 'move' ? null : e.target) };
+    box.classList.add('grab');
+    if (drag.el && drag.el.classList) drag.el.classList.add('act');
+    ui.haptic(10);
     try { box.setPointerCapture(e.pointerId); } catch (_) {}
     e.preventDefault();
   });
@@ -119,7 +130,11 @@
     paint();
   });
 
-  function endDrag() { drag = null; }
+  function endDrag() {
+    if (drag && drag.el && drag.el.classList) drag.el.classList.remove('act');
+    box.classList.remove('grab');
+    drag = null;
+  }
   box.addEventListener('pointerup', endDrag);
   box.addEventListener('pointercancel', endDrag);
 
